@@ -1,0 +1,365 @@
+// src/screens/ReportScreen.tsx
+
+import React, { useState, useEffect } from "react";
+import {
+  View, Text, TextInput, TouchableOpacity,
+  StyleSheet, Alert, ActivityIndicator, ScrollView, Image
+} from "react-native";
+import { collection, addDoc } from "firebase/firestore";
+import * as Location from "expo-location";
+import * as ImagePicker from "expo-image-picker";
+import { db } from "../services/firebase";
+import { useAuth } from "../context/AuthContext";
+import { useNavigation } from "@react-navigation/native";
+import { ReportType } from "../types";
+
+const REPORT_TYPES: { label: string; value: ReportType; emoji: string }[] = [
+  { label: "Robo", value: "robo", emoji: "🚨" },
+  { label: "Vehículo Sospechoso", value: "vehiculo_sospechoso", emoji: "🚗" },
+  { label: "Emergencia Médica", value: "emergencia_medica", emoji: "🏥" },
+  { label: "Microtráfico", value: "microtrafico", emoji: "⚠️" },
+  { label: "Otro", value: "otro", emoji: "📢" },
+];
+
+export default function ReportScreen() {
+  const { userId, userData } = useAuth();
+  const navigation = useNavigation<any>();
+  const [selectedType, setSelectedType] = useState<ReportType | null>(null);
+  const [description, setDescription] = useState("");
+  const [address, setAddress] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [image, setImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    getLocation();
+  }, []);
+
+  const getLocation = async () => {
+    setLocationLoading(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permiso denegado", "Necesitamos acceso a tu ubicación");
+        return;
+      }
+      const location = await Location.getCurrentPositionAsync({});
+      const { latitude, longitude } = location.coords;
+      const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
+      if (geocode.length > 0) {
+        const place = geocode[0];
+        const fullAddress = `${place.street || ""} ${place.streetNumber || ""}, ${place.city || place.district || ""}`.trim();
+        setAddress(fullAddress);
+      }
+      setCoords({ lat: latitude, lng: longitude });
+    } catch (error) {
+      Alert.alert("Error", "No pudimos obtener tu ubicación");
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permiso denegado", "Necesitamos acceso a tu galería");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.3, // Calidad baja para reducir tamaño
+      base64: true  // Obtener base64 directamente
+    });
+    if (!result.canceled && result.assets[0].base64) {
+      setImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+    }
+  };
+
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permiso denegado", "Necesitamos acceso a tu cámara");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.3, // Calidad baja para reducir tamaño
+      base64: true  // Obtener base64 directamente
+    });
+    if (!result.canceled && result.assets[0].base64) {
+      setImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedType) {
+      Alert.alert("Error", "Selecciona el tipo de alerta");
+      return;
+    }
+    if (!description) {
+      Alert.alert("Error", "Escribe una descripción");
+      return;
+    }
+    if (!address) {
+      Alert.alert("Error", "Ingresa la dirección del incidente");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await addDoc(collection(db, "reports"), {
+        type: selectedType,
+        description: description,
+        status: "pending",
+        authorId: userId,
+        authorNickname: userData?.nickname || "Anónimo",
+        location: {
+          lat: coords?.lat || 0,
+          lng: coords?.lng || 0,
+          address: address
+        },
+        mediaUrl: image || "",
+        confirmations: 0,
+        doubts: 0,
+        createdAt: new Date()
+      });
+
+      Alert.alert("✅ Alerta publicada", "Tu reporte fue enviado a la comunidad");
+      navigation.goBack();
+    } catch (error: any) {
+      Alert.alert("Error", error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <ScrollView style={styles.container}>
+
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.back}>← Volver</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>Nueva Alerta</Text>
+      </View>
+
+      {/* Apodo anónimo */}
+      <View style={styles.anonBadge}>
+        <Text style={styles.anonText}>🎭 Publicando como </Text>
+        <Text style={styles.anonNick}>{userData?.nickname || "Anónimo"}</Text>
+      </View>
+
+      {/* Tipo de incidente */}
+      <Text style={styles.label}>Tipo de incidente</Text>
+      <View style={styles.typesGrid}>
+        {REPORT_TYPES.map((type) => (
+          <TouchableOpacity
+            key={type.value}
+            style={[
+              styles.typeBtn,
+              selectedType === type.value && styles.typeBtnSelected
+            ]}
+            onPress={() => setSelectedType(type.value)}
+          >
+            <Text style={styles.typeEmoji}>{type.emoji}</Text>
+            <Text style={styles.typeLabel}>{type.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Descripción */}
+      <Text style={styles.label}>Descripción</Text>
+      <TextInput
+        style={styles.textArea}
+        placeholder="Describe lo que está ocurriendo..."
+        placeholderTextColor="#666"
+        value={description}
+        onChangeText={setDescription}
+        multiline
+        numberOfLines={4}
+      />
+
+      {/* Foto */}
+      <Text style={styles.label}>Foto del incidente (opcional)</Text>
+      <View style={styles.photoButtons}>
+        <TouchableOpacity style={styles.photoBtn} onPress={takePhoto}>
+          <Text style={styles.photoBtnText}>📷 Tomar foto</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
+          <Text style={styles.photoBtnText}>🖼️ Galería</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Preview imagen */}
+      {image && (
+        <View style={styles.imagePreview}>
+          <Image source={{ uri: image }} style={styles.previewImg} />
+          <TouchableOpacity
+            style={styles.removeImg}
+            onPress={() => setImage(null)}
+          >
+            <Text style={styles.removeImgText}>✕ Quitar foto</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Ubicación */}
+      <Text style={styles.label}>Ubicación detectada</Text>
+      {locationLoading ? (
+        <View style={styles.locationBox}>
+          <ActivityIndicator size="small" color="#E63946" />
+          <Text style={styles.locationText}>Obteniendo ubicación...</Text>
+        </View>
+      ) : (
+        <View style={styles.locationBox}>
+          <Text style={styles.locationIcon}>📍</Text>
+          <TextInput
+            style={styles.locationInput}
+            value={address}
+            onChangeText={setAddress}
+            placeholderTextColor="#666"
+            placeholder="Dirección del incidente"
+          />
+          <TouchableOpacity onPress={getLocation}>
+            <Text style={styles.refreshBtn}>🔄</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Botón publicar */}
+      <TouchableOpacity
+        style={styles.button}
+        onPress={handleSubmit}
+        disabled={loading}
+      >
+        {loading ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color="#fff" />
+            <Text style={styles.buttonText}>Publicando...</Text>
+          </View>
+        ) : (
+          <Text style={styles.buttonText}>🚨 Publicar Alerta</Text>
+        )}
+      </TouchableOpacity>
+
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#1a1a2e" },
+  header: {
+    padding: 20,
+    paddingTop: 50,
+    backgroundColor: "#16213e",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16
+  },
+  back: { color: "#E63946", fontSize: 16 },
+  title: { color: "#fff", fontSize: 20, fontWeight: "bold" },
+  anonBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#16213e",
+    margin: 16,
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 0.5,
+    borderColor: "#333"
+  },
+  anonText: { color: "#aaa", fontSize: 13 },
+  anonNick: { color: "#E63946", fontSize: 13, fontWeight: "bold" },
+  label: { color: "#aaa", fontSize: 14, marginLeft: 16, marginTop: 16, marginBottom: 8 },
+  typesGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: 12,
+    gap: 8
+  },
+  typeBtn: {
+    backgroundColor: "#16213e",
+    borderRadius: 10,
+    padding: 12,
+    alignItems: "center",
+    width: "30%",
+    borderWidth: 2,
+    borderColor: "transparent"
+  },
+  typeBtnSelected: { borderColor: "#E63946" },
+  typeEmoji: { fontSize: 24 },
+  typeLabel: { color: "#fff", fontSize: 11, marginTop: 4, textAlign: "center" },
+  textArea: {
+    backgroundColor: "#16213e",
+    borderRadius: 10,
+    padding: 14,
+    marginHorizontal: 16,
+    color: "#fff",
+    fontSize: 16,
+    textAlignVertical: "top",
+    minHeight: 100
+  },
+  photoButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 16
+  },
+  photoBtn: {
+    flex: 1,
+    backgroundColor: "#16213e",
+    borderRadius: 10,
+    padding: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333"
+  },
+  photoBtnText: { color: "#fff", fontSize: 14 },
+  imagePreview: {
+    margin: 16,
+    borderRadius: 10,
+    overflow: "hidden"
+  },
+  previewImg: {
+    width: "100%",
+    height: 200,
+    borderRadius: 10
+  },
+  removeImg: {
+    backgroundColor: "#c0392b",
+    padding: 8,
+    alignItems: "center"
+  },
+  removeImgText: { color: "#fff", fontSize: 13 },
+  locationBox: {
+    backgroundColor: "#16213e",
+    borderRadius: 10,
+    padding: 12,
+    marginHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  locationIcon: { fontSize: 16 },
+  locationInput: { flex: 1, color: "#fff", fontSize: 13 },
+  locationText: { color: "#aaa", fontSize: 13, marginLeft: 8 },
+  refreshBtn: { fontSize: 18 },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  button: {
+    backgroundColor: "#E63946",
+    borderRadius: 10,
+    padding: 16,
+    alignItems: "center",
+    margin: 16,
+    marginTop: 24,
+    marginBottom: 40
+  },
+  buttonText: { color: "#fff", fontWeight: "bold", fontSize: 16 }
+});
