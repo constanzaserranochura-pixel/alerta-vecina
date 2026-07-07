@@ -1,0 +1,136 @@
+// ============================================================
+// ARCHIVO: reportService.ts
+// SPRINT 2 - Motor de votación comunitaria y sistema de reputación
+// ============================================================
+// Este archivo es el núcleo del Sprint 2.
+// Contiene toda la lógica que ocurre cuando un vecino
+// vota sobre la veracidad de una alerta.
+//
+// Cuando un vecino presiona "Confirmar" o "Dudoso" en AlertDetailScreen,
+// esta función se encarga de hacer TODO lo siguiente:
+// 1. Verificar que el vecino no haya votado antes en esta alerta
+// 2. Guardar el voto en la base de datos
+// 3. Actualizar los contadores del reporte (confirmations / doubts)
+// 4. Actualizar la reputación del autor del reporte (trustScore)
+// 5. Cambiar el estado del reporte si llega al umbral de votos
+// ============================================================
+
+import {
+  doc, updateDoc, increment,
+  collection, addDoc, query,
+  where, getDocs, getDoc
+} from "firebase/firestore";
+import { db } from "./firebase";
+
+export const validateReport = async (
+  reportId: string,          // ID del reporte que se está validando
+  userId: string,            // ID del vecino que está votando
+  vote: "confirmed" | "doubtful" // Tipo de voto: confirmar o dudar
+) => {
+
+
+  // PASO 1: CONTROL ANTI-DUPLICADO
+  // Antes de registrar el voto, verificamos en la colección
+  // "validations" si este usuario ya votó en este reporte.
+  // Si ya votó, lanzamos un error y detenemos todo el proceso.
+  // Esto evita que un vecino manipule los resultados votando múltiples veces.
+ 
+  const validationsRef = collection(db, "validations");
+  const q = query(
+    validationsRef,
+    where("reportId", "==", reportId), // Busca votos de este reporte
+    where("userId", "==", userId)      // Del usuario actual
+  );
+  const existing = await getDocs(q);
+
+  if (!existing.empty) {
+    // Si encontramos un voto previo, lanzamos un error
+    // Este error es capturado en AlertDetailScreen y mostrado al usuario
+    throw new Error("Ya votaste en esta alerta");
+  }
+
+  // PASO 2: REGISTRAR EL VOTO
+  // Guardamos el voto en la colección "validations".
+  // Esta colección sirve como registro histórico de todos los votos
+  // y también es lo que consultamos en el Paso 1 para evitar duplicados.
+
+  await addDoc(validationsRef, {
+    reportId,              // A qué reporte pertenece este voto
+    userId,                // Quién votó (para el control anti-duplicado)
+    vote,                  // Qué votó: "confirmed" o "doubtful"
+    createdAt: new Date()  // Cuándo votó
+  });
+
+  
+  // PASO 3: ACTUALIZAR LOS CONTADORES DEL REPORTE
+  // Sumamos 1 al contador correspondiente del reporte.
+  // Usamos increment(1) en vez de leer el valor y sumarle 1 manualmente,
+  // porque increment() es una operación atómica de Firestore:
+  // si dos vecinos votan al mismo tiempo, ambos votos se cuentan correctamente
+  // sin que uno pise al otro.
+ 
+  const reportRef = doc(db, "reports", reportId);
+  if (vote === "confirmed") {
+    await updateDoc(reportRef, { confirmations: increment(1) }); // Suma 1 a confirmaciones
+  } else {
+    await updateDoc(reportRef, { doubts: increment(1) }); // Suma 1 a dudosos
+  }
+
+  
+  // PASO 4: LEER EL REPORTE ACTUALIZADO
+  // Necesitamos los valores actuales de confirmations y doubts
+  // para decidir si el reporte ya alcanzó el umbral para cambiar su estado.
+  // También necesitamos el authorId para actualizar su reputación.
+
+  const reportSnap = await getDoc(reportRef);
+  const reportData = reportSnap.data();
+  if (!reportData) return; // Si el reporte no existe, no hacemos nada
+
+  const confirmations = reportData.confirmations; // Total de votos de confirmación
+  const doubts = reportData.doubts;               // Total de votos dudosos
+  const authorId = reportData.authorId;           // ID del autor del reporte
+  const authorRef = doc(db, "users", authorId);   // Referencia al documento del autor
+
+  
+  // PASO 5: ACTUALIZAR LA REPUTACIÓN DEL AUTOR
+  // Cada vez que alguien vota, el puntaje de confianza (trustScore)
+  // del autor del reporte sube o baja según el tipo de voto.
+  //
+  // Lógica de puntos:
+  // +10 puntos → cuando un vecino confirma la alerta (voto positivo)
+  //  -5 puntos → cuando un vecino la marca como dudosa (voto negativo)
+  
+  if (vote === "confirmed") {
+    await updateDoc(authorRef, { trustScore: increment(10) }); // Premio por alerta veídica
+  } else {
+    await updateDoc(authorRef, { trustScore: increment(-5) });  // Penalización leve por duda
+  }
+
+  
+  // PASO 6: CAMBIO DE ESTADO AUTOMÁTICO DEL REPORTE
+  // Cuando un reporte alcanza cierta cantidad de votos,
+  // su estado cambia automáticamente. Hay dos reglas:
+  //
+  // REGLA 1 - CONFIRMAR:
+  // Si llega a 3 confirmaciones → estado cambia a "confirmed"
+  // El autor recibe +15 puntos bonus por tener una alerta verificada
+  //
+  // REGLA 2 - MARCAR COMO FALSO:
+  // Si llega a 3 votos dudosos → estado cambia a "fake"
+  // El autor recibe -20 puntos como penalización por desinformar
+  //
+  // NOTA IMPORTANTE: Las alertas se publican INMEDIATAMENTE
+  // sin necesidad de confirmaciones previas. El sistema de votos
+  // solo sirve para validar o invalidar alertas ya publicadas,
+  // no para aprobarlas antes de que se vean.
+  
+  if (confirmations >= 3) {
+    // La comunidad confirmó que la alerta es real
+    await updateDoc(reportRef, { status: "confirmed" });
+    await updateDoc(authorRef, { trustScore: increment(15) }); // Bonus por alerta confirmada
+  } else if (doubts >= 3) {
+    // La comunidad considera que la alerta es falsa
+    await updateDoc(reportRef, { status: "fake" });
+    await updateDoc(authorRef, { trustScore: increment(-20) }); // Penalización por alerta falsa
+  }
+};
