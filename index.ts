@@ -1,8 +1,47 @@
-import { registerRootComponent } from 'expo';
+// src/types/index.ts
 
-import App from './App';
+export type ReportType = 
+  | "robo" 
+  | "vehiculo_sospechoso" 
+  | "emergencia_medica" 
+  | "microtrafico" 
+  | "otro";
 
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately
-registerRootComponent(App);
+export type ReportStatus = "pending" | "confirmed" | "fake";
+
+export type VoteType = "confirmed" | "doubtful";
+
+export interface Report {
+  id?: string;
+  type: ReportType;
+  description: string;
+  status: ReportStatus;
+  authorId: string;
+  authorNickname: string;
+  location: {
+    lat: number;
+    lng: number;
+    address: string;
+  };
+  mediaUrl?: string;
+  confirmations: number;
+  doubts: number;
+  createdAt: Date;
+}
+
+export interface User {
+  id?: string;
+  nickname: string;
+  trustScore: number;
+  reportsCount: number;
+  neighborhood: string;
+  createdAt: Date;
+}
+
+export interface Validation {
+  id?: string;
+  reportId: string;
+  userId: string;
+  vote: VoteType;
+  createdAt: Date;
+}
